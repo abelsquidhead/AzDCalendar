@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+    <script src="lib/VSS.SDK.min.js"></script>
+    <link href='lib/fullcalendar/main.css' rel='stylesheet' />
+    <script src="lib/fullcalendar/main.js"></script>
+
+    <style>
+        body {
+            /* background-color: rgb(0, 67, 117); */
+            color: black;
+            margin: 10px;    
+            font-family: "Segoe UI VSS (Regular)","-apple-system",BlinkMacSystemFont,"Segoe UI",sans-serif;
+        }
+    </style>
+    <script type="text/javascript">
+        VSS.init();
+        VSS.ready(function() {
+            // document.getElementById("name").innerText = VSS.getWebContext().user.name;
+
+        });
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // download AzD client rest api
+            VSS.require(
+                [
+                    "VSS/Service", 
+                    "TFS/WorkItemTracking/RestClient",
+                    "TFS/Core/RestClient",
+                    "TFS/WorkItemTracking/Contracts",
+                    "VSS/Authentication/Services"
+                ], 
+                async function (VSS_Service, TFS_Wit_WebApi, REST_Client, WIT_Contracts, VSS_Auth_Service) {
+                    var eventNameUrlHash = [];
+                    var queryIdWIQLHash = [];
+                    var calendarEl = document.getElementById('calendar');
+                    var calendar = new FullCalendar.Calendar(calendarEl, {
+                        initialView: 'dayGridMonth',
+                        eventClick: function(info) {
+                            var routeUrl = eventNameUrlHash[info.event.title];
+                            window.top.location.href = routeUrl;
+                        },
+                        events: async function(info, successCallback, failureCallback) {
+                            clearCalendar();
+                            var queryIdDropDownElement = document.getElementById("workItemQueries");
+                            var queryId = queryIdDropDownElement.options[queryIdDropDownElement.selectedIndex].value;
+                            var returnArray = await getQuery(queryId);
+                            successCallback(returnArray);
+                        }
+                    });
+                    calendar.render();
+
+
+                    // Get the REST clients
+                    var witClient = VSS_Service.getCollectionClient(TFS_Wit_WebApi.WorkItemTrackingHttpClient);
+                    var coreClient = REST_Client.getClient();
+
+                    // get current project and team
+                    var webContext = VSS.getWebContext();
+                    var currOrganizationName = webContext.account.name;
+                    var currProjectName = webContext.project.name;
+                    var currProjectId = webContext.project.id;
+                    var currTeamId = webContext.team.id;
+                    var currTeamName = webContext.team.name;
+
+                    function transformForTransport(str) {
+                        var index = str.indexOf('\\');
+                        if (index > 0) {
+                            var newString = str.substring(0, index);
+                            newString = newString + "\\\\\\\\" + transformForTransport(str.substring(index+1));
+                        }
+                        else {
+                            newString = str;
+                        }
+                    
+                        return newString;
+                    }
+
+                    // get auth header
+                    function queryAzD(wiqlString) {
+                        return new Promise((resolve, reject) => {
+                            VSS.getAccessToken().then(async function(token){
+                                // Format the auth header
+                                var authHeader = VSS_Auth_Service.authTokenManager.getAuthorizationHeader(token);
+                                var currCalDate = calendar.getDate();
+                                var startMonth = currCalDate.getMonth();
+                                var startYear = currCalDate.getFullYear();
+                                if (startMonth === 0) {
+                                    startMonth = 12;
+                                    startYear = startYear - 1;
+                                }
+                                var endMonth = currCalDate.getMonth() + 2;
+                                var endYear = currCalDate.getFullYear();
+                                if (endMonth === 13) {
+                                    endMonth = 1;
+                                    endYear = endYear + 1;
+                                }
+                                wiqlString = wiqlString + " and ( (([Custom.PublishDate] > '" + startMonth + "/1/" + startYear + "') and ([Custom.PublishDate] < '" + endMonth + "/7/" + endYear + "')) or (([Microsoft.VSTS.Scheduling.StartDate] > '" + startMonth + "/1/" + startYear + "') and ([Microsoft.VSTS.Scheduling.StartDate] < '" + endMonth + "/7/" + endYear + "')) or (([Microsoft.VSTS.Scheduling.DueDate] > '" + startMonth + "/1/" + startYear + "') and ([Microsoft.VSTS.Scheduling.DueDate] < '" + endMonth + "/7/" + endYear + "')) )";
+                                wiqlString = transformForTransport(wiqlString);
+                                var wiql = '{"query": "' + wiqlString + '"}';
+
+                                var getWIQLUrl = encodeURI('https://dev.azure.com/' + currOrganizationName + '/' + currProjectName + '/' + currTeamName + '/_apis/wit/wiql?api-version=6.1-preview.2');
+                                const response = await fetch(getWIQLUrl, {
+                                    method: 'POST',
+                                    body: wiql, // string or object
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'Authorization': authHeader
+                                    }
+                                });
+                                const myJson = await response.json(); //extract JSON from the http response 
+                                resolve(myJson);
+                            });
+                        });
+                    }
+
+                    function errorGotQueries(error) {
+                        console.log("error is: " + error);
+                    }
+
+                    // This function returns all the children of a node
+                    async function getChildrenOfNode(node) {
+                        return new Promise((resolve, reject) => {
+                            witClient
+                                .getQuery(currProjectId, node.path, WIT_Contracts.QueryExpand.All, 2)
+                                .then(
+                                    async function(result) {
+                                        if (result.hasChildren) {
+                                            resolve(result.children);
+                                        }
+                                        else {
+                                            resolve([]);
+                                        }
+                                    }, 
+                                    errorGotQueries
+                                );
+                        });
+                    }
+
+                    // This function recursively returns all the flat queries
+                    function getFlatQueries(listOfQueries) {
+                        return new Promise(async(resolve, reject) => {
+                            // initialize values
+                            var returnList = [];
+
+                            // go through all the list
+                            for (var i = 0; i < listOfQueries.length; i++) {
+                                // if this is a leaf node/query and it is a flat query
+                                if ((listOfQueries[i].isFolder === undefined) && (listOfQueries[i].queryType === 1)) {
+                                    returnList.push(listOfQueries[i])
+                                }
+
+                                // else if this is a folder
+                                else if (listOfQueries[i].isFolder) {
+                                    if (listOfQueries[i].children === undefined) {
+                                        listOfQueries[i].children = await getChildrenOfNode(listOfQueries[i]);
+                                    }
+                                    var flatList = await getFlatQueries(listOfQueries[i].children);
+                                    returnList = returnList.concat(flatList);
+                                }
+
+                                // query that is not a flat query
+
+                            }
+                            resolve(returnList);
+                        });
+                    }
+
+                    function clearCalendar() {
+                        try {
+                            // clear out calendar
+                            var eventList = calendar.getEvents();
+                            for (var i = 0; i < eventList.length; i++) {
+                                eventList[i].remove();
+                            }
+                        }
+                        catch(err)                         {
+                            console.log("can't clear calendar yet");
+                        }
+                    }
+
+                    function setCalendarColor(workItem, workItemResult) {
+                        // determine work item type and then assign a color based on type
+                        if (workItemResult.fields["System.WorkItemType"] === "Community") {
+                            workItem.backgroundColor = "#40FF00";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Content") {
+                            workItem.backgroundColor = "#2ECCFA";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Event") {
+                            workItem.backgroundColor = "#FF8000";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Issue") {
+                            workItem.backgroundColor = "#FA58F4";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Logistics") {
+                            workItem.backgroundColor = "#4B088A";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Moment") {
+                            workItem.backgroundColor = "#424242";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Product") {
+                            workItem.backgroundColor = "#DF0174";
+                        }
+                        else if (workItemResult.fields["System.WorkItemType"] === "Reporting") {
+                            workItem.backgroundColor = "#D0A9F5";
+                        }
+                        else {
+                            workItem.backgroundColor = "#0101DF";
+                        }
+                    }
+
+                    function getQuery(queryId) {
+                        return new Promise(async(resolve, reject) => {
+                            if (queryId != 0) {
+                                var wiql = queryIdWIQLHash[queryId];
+                                var wiqlResult = await queryAzD(wiql);
+
+                                if (wiqlResult.workItems.length === 0) {
+                                    resolve([]);
+                                }
+                                else {
+                                    // get result back, create an id array 
+                                    var idArray = [];
+                                    for (var i = 0; i < wiqlResult.workItems.length; i++) {
+                                        idArray.push(wiqlResult.workItems[i].id);
+                                    }
+                                            
+                                    // create return field
+                                    var fieldArray = [];
+                                    fieldArray.push("Custom.PublishDate");
+                                    fieldArray.push("Microsoft.VSTS.Scheduling.StartDate");
+                                    fieldArray.push("Microsoft.VSTS.Scheduling.DueDate");
+                                    fieldArray.push("Custom.EndDate");
+                                    fieldArray.push("System.Title");
+                                    fieldArray.push("Work Item Type");
+                                    fieldArray.push("System.WorkItemType");
+                                    
+                                    // get work items from query
+                                    witClient  
+                                        .getWorkItems(idArray, fieldArray)
+                                        .then(
+                                            function(workItemsResult) {
+                                                calEvents = [];
+                                                eventNameUrlHash = [];
+                                                for (var i=0; i < workItemsResult.length; i++) {
+                                                    var workItem = [];
+                                                    workItem.title = workItemsResult[i].id + " " + workItemsResult[i].fields["System.Title"];
+                                                    eventNameUrlHash[workItem.title] = workItemsResult[i].url.split('_')[0] + currProjectName + "/_workitems/edit/" + workItemsResult[i].id;;
+                                                    setCalendarColor(workItem, workItemsResult[i]);
+                                                    
+                                                    // based off of date type used, this creates the workItem date.
+                                                    if (workItemsResult[i].fields["Custom.PublishDate"] === undefined) {
+                                                        if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"] === undefined) {
+                                                            if (!(workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined)) {
+                                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
+                                                                calEvents.push(workItem);
+                                                            }
+                                                        }
+                                                        else {
+                                                            if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined) {
+                                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"].split('T')[0];
+                                                            }
+                                                            else {
+                                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
+                                                                if (!(workItemsResult[i].fields["Custom.EndDate"] === undefined)) {
+                                                                    workItem.end = workItemsResult[i].fields["Custom.EndDate"].split('T')[0];
+                                                                }
+                                                            }
+                                                            
+                                                            calEvents.push(workItem);
+                                                        }
+                                                    }
+                                                    else {
+                                                        workItem.start = workItemsResult[i].fields["Custom.PublishDate"].split('T')[0];
+                                                        calEvents.push(workItem);
+                                                    }
+                                                }
+                                                resolve(calEvents);
+                                            },
+                                            errorGotQueries
+                                        );
+                                }
+                            }
+                            else {
+                                resolve([]);
+                            }
+                        });
+                    }
+                    
+                    function displayWorkItems(workItemArray) {
+                        clearCalendar();
+                        for (var i = 0; i < workItemArray.length; i++) {
+                            calendar.addEvent(workItemArray[i]);
+                        }
+                    }
+
+                    // this functions calls a query by id and populates calendar
+                    async function callQueryAndDisplay(queryId) {
+                        var workItemArray = await getQuery(queryId);
+                        displayWorkItems(workItemArray);
+                    }
+
+                    function GetQueryDropDownSync() {
+                        return new Promise((resolve, reject) => {
+                            // get list of all queries
+                            witClient
+                                .getQueries(currProjectId, WIT_Contracts.QueryExpand.All, 2)
+                                .then(
+                                    async function(result) {
+                                        // recursively crawl and build out all flat list querires
+                                        var flatList = await getFlatQueries(result);
+
+                                        // add all flat list queries to the drop down
+                                        for (var i=0; i < flatList.length; i++) {
+                                            $('#workItemQueries').append(new Option(flatList[i].name, flatList[i].id)); 
+                                            queryIdWIQLHash[flatList[i].id] = flatList[i].wiql;
+                                        }
+
+                                        // sync
+                                        resolve([]);
+                                    },
+                                    function(error) {
+                                        alert("couldn't get query drop down: " + error);
+                                    }
+                                );
+
+                        })
+                    }
+
+                    function getSavedQueryForUser() {
+                        // get saved query id
+                        VSS.getService(VSS.ServiceIds.ExtensionData).then(function(dataService) {
+                            // Get value in user scope
+                            dataService.getValue("userScopedKey", {scopeType: "User"}).then(async function(value) {
+                                // value 
+                                console.log("User scoped key value is " + value);
+                                // 
+                                $('#workItemQueries').val(value);
+                                callQueryAndDisplay(value);
+                            });
+                        });
+                    }
+
+                    function saveQueryForUser(queryObj) {
+                        VSS.getService(VSS.ServiceIds.ExtensionData).then(function(dataService) {
+                            // Set value in user scope
+                            dataService.setValue("userScopedKey", queryObj, {scopeType: "User"}).then(function(value) {
+                                console.log("User scoped key value is " + value);
+                            });
+                        });
+                    }
+
+                    // event listener drop down changed
+                    $('#workItemQueries').change(function() {
+                        var queryId = $(this).val();
+                        saveQueryForUser(queryId);
+                        callQueryAndDisplay(queryId);
+                    });
+                                
+                    await GetQueryDropDownSync();
+                    getSavedQueryForUser();
+                    
+                    
+                }
+            );
+        });
+    </script>
+
+    <script>
+
+    
+
+        
+
+
+
+    </script>
+</head>
+
+<body>        
+    <div>
+        Work Item Query: <select id="workItemQueries">
+            <option value="0">--Select Query--</option>
+        </select>
+    </div>
+    <div id='calendar'></div>
+</body>
+
+</html>
