@@ -31,8 +31,21 @@
                     "VSS/Authentication/Services"
                 ], 
                 async function (VSS_Service, TFS_Wit_WebApi, REST_Client, WIT_Contracts, VSS_Auth_Service) {
+                    // create return field for work item queries
+                    var fieldArray = [];
+                    fieldArray.push("Custom.PublishDate");
+                    fieldArray.push("Microsoft.VSTS.Scheduling.StartDate");
+                    fieldArray.push("Microsoft.VSTS.Scheduling.DueDate");
+                    fieldArray.push("Custom.EndDate");
+                    fieldArray.push("System.Title");
+                    fieldArray.push("Work Item Type");
+                    fieldArray.push("System.WorkItemType");
+
+                    // "global" variables used throughout calendar
                     var eventNameUrlHash = [];
                     var queryIdWIQLHash = [];
+                    
+                    // calendar
                     var calendarEl = document.getElementById('calendar');
                     var calendar = new FullCalendar.Calendar(calendarEl, {
                         initialView: 'dayGridMonth',
@@ -42,14 +55,12 @@
                         },
                         events: async function(info, successCallback, failureCallback) {
                             clearCalendar();
-                            var queryIdDropDownElement = document.getElementById("workItemQueries");
-                            var queryId = queryIdDropDownElement.options[queryIdDropDownElement.selectedIndex].value;
-                            var returnArray = await getQuery(queryId);
-                            successCallback(returnArray);
+                            var queryObj = await getSavedQueryForUserSync();
+                            var calEvents = await getCalEventsFromWIQLSync(queryObj.wiql);
+                            successCallback(calEvents);
                         }
                     });
                     calendar.render();
-
 
                     // Get the REST clients
                     var witClient = VSS_Service.getCollectionClient(TFS_Wit_WebApi.WorkItemTrackingHttpClient);
@@ -63,39 +74,86 @@
                     var currTeamId = webContext.team.id;
                     var currTeamName = webContext.team.name;
 
+
+                    // recursive function which changes back slash to 4 back slashes
+                    // this is because I use this string to create json string and need
+                    // these extra slashes as escape characters. I'm sure there's a better
+                    // way to do this but too lazy to do more javascript googlery today
                     function transformForTransport(str) {
                         var index = str.indexOf('\\');
-                        if (index > 0) {
-                            var newString = str.substring(0, index);
+                        var newString = str;
+                        if (index >= 0) {
+                            newString = str.substring(0, index);
                             newString = newString + "\\\\\\\\" + transformForTransport(str.substring(index+1));
-                        }
-                        else {
-                            newString = str;
                         }
                     
                         return newString;
                     }
 
-                    // get auth header
+
+                    // this function get current calendar display date and calculate the offset by a month
+                    // going back and 7 extra days going forward 
+                    function getCalendarOffset() {
+                        // get current calendar display date and calculate the offset to query by
+                        var currCalDate = calendar.getDate();
+                        var startMonth = currCalDate.getMonth();
+                        var startYear = currCalDate.getFullYear();
+                        if (startMonth === 0) {
+                            startMonth = 12;
+                            startYear = startYear - 1;
+                        }
+                        var endMonth = currCalDate.getMonth() + 2;
+                        var endYear = currCalDate.getFullYear();
+                        if (endMonth === 13) {
+                            endMonth = 1;
+                            endYear = endYear + 1;
+                        }
+                        var returnObj = [];
+                        returnObj.startMonth = startMonth;
+                        returnObj.startYear = startYear;
+                        returnObj.endMonth = endMonth;
+                        returnObj.endYear = endYear;
+
+                        return returnObj;
+                    }
+
+
+                    // this function tacks on date filters so i have same query but for a month before and 
+                    // current month + 7 days. This is so the query doesn't take too long and also so it
+                    // doesn't return thousands of work items at a time
+                    function transformByAddingDateFilter(str) {
+                        // initialize return string. This value will be used to return the modified wiql
+                        var returnString = str;
+
+                        // look for order by in wiql, if it exists it needs to go on at the end after the filtering by date
+                        var orderByIndex = str.indexOf("order by");
+                        if (orderByIndex >= 0) {
+                            // order by exists, grab all the wiql right up to "order by"
+                            returnString = str.substring(0, orderByIndex);
+                        }
+                        // calculate calendar offset and tack on filter wiql
+                        var calendarOffset = getCalendarOffset();
+                        returnString = returnString + " and ( (([Custom.PublishDate] > '" + calendarOffset.startMonth + "/1/" + calendarOffset.startYear + "') and ([Custom.PublishDate] < '" + calendarOffset.endMonth + "/7/" + calendarOffset.endYear + "')) or (([Microsoft.VSTS.Scheduling.StartDate] > '" + calendarOffset.startMonth + "/1/" + calendarOffset.startYear + "') and ([Microsoft.VSTS.Scheduling.StartDate] < '" + calendarOffset.endMonth + "/7/" + calendarOffset.endYear + "')) or (([Microsoft.VSTS.Scheduling.DueDate] > '" + calendarOffset.startMonth + "/1/" + calendarOffset.startYear + "') and ([Microsoft.VSTS.Scheduling.DueDate] < '" + calendarOffset.endMonth + "/7/" + calendarOffset.endYear + "')) ) ";
+                        
+                        // tack on order by to the end if it exists
+                        if (orderByIndex >= 0) {
+                            returnString = returnString + str.substring(orderByIndex);
+                        }
+                        
+                        return (returnString);
+                    }
+
+
+                    // This function uses the AzD rest api to call the wiql, returns an array of
+                    // responses which basically only holds the work item id (it holds more stuff but not 
+                    // anything we need)
                     function queryAzD(wiqlString) {
                         return new Promise((resolve, reject) => {
                             VSS.getAccessToken().then(async function(token){
                                 // Format the auth header
                                 var authHeader = VSS_Auth_Service.authTokenManager.getAuthorizationHeader(token);
-                                var currCalDate = calendar.getDate();
-                                var startMonth = currCalDate.getMonth();
-                                var startYear = currCalDate.getFullYear();
-                                if (startMonth === 0) {
-                                    startMonth = 12;
-                                    startYear = startYear - 1;
-                                }
-                                var endMonth = currCalDate.getMonth() + 2;
-                                var endYear = currCalDate.getFullYear();
-                                if (endMonth === 13) {
-                                    endMonth = 1;
-                                    endYear = endYear + 1;
-                                }
-                                wiqlString = wiqlString + " and ( (([Custom.PublishDate] > '" + startMonth + "/1/" + startYear + "') and ([Custom.PublishDate] < '" + endMonth + "/7/" + endYear + "')) or (([Microsoft.VSTS.Scheduling.StartDate] > '" + startMonth + "/1/" + startYear + "') and ([Microsoft.VSTS.Scheduling.StartDate] < '" + endMonth + "/7/" + endYear + "')) or (([Microsoft.VSTS.Scheduling.DueDate] > '" + startMonth + "/1/" + startYear + "') and ([Microsoft.VSTS.Scheduling.DueDate] < '" + endMonth + "/7/" + endYear + "')) )";
+
+                                wiqlString = transformByAddingDateFilter(wiqlString);
                                 wiqlString = transformForTransport(wiqlString);
                                 var wiql = '{"query": "' + wiqlString + '"}';
 
@@ -114,12 +172,17 @@
                         });
                     }
 
-                    function errorGotQueries(error) {
+
+                    // this function gets called when an async call returns an error and logs the error to
+                    // the console
+                    function errorCall(error) {
                         console.log("error is: " + error);
                     }
 
-                    // This function returns all the children of a node
-                    async function getChildrenOfNode(node) {
+                    
+                    // This function returns all the children of a query node. Can return folders or
+                    // work item queries
+                    function getChildrenOfNodeSync(node) {
                         return new Promise((resolve, reject) => {
                             witClient
                                 .getQuery(currProjectId, node.path, WIT_Contracts.QueryExpand.All, 2)
@@ -132,13 +195,14 @@
                                             resolve([]);
                                         }
                                     }, 
-                                    errorGotQueries
+                                    errorCall
                                 );
                         });
                     }
 
+
                     // This function recursively returns all the flat queries
-                    function getFlatQueries(listOfQueries) {
+                    function getFlatQueriesSync(listOfQueries) {
                         return new Promise(async(resolve, reject) => {
                             // initialize values
                             var returnList = [];
@@ -152,10 +216,14 @@
 
                                 // else if this is a folder
                                 else if (listOfQueries[i].isFolder) {
+                                    // if children haven't been fetched yet
                                     if (listOfQueries[i].children === undefined) {
-                                        listOfQueries[i].children = await getChildrenOfNode(listOfQueries[i]);
+                                        // fetch children 
+                                        listOfQueries[i].children = await getChildrenOfNodeSync(listOfQueries[i]);
                                     }
-                                    var flatList = await getFlatQueries(listOfQueries[i].children);
+
+                                    // get all the flat list queries
+                                    var flatList = await getFlatQueriesSync(listOfQueries[i].children);
                                     returnList = returnList.concat(flatList);
                                 }
 
@@ -166,6 +234,10 @@
                         });
                     }
 
+
+                    // This function clears out the calendar. I wonder if there is an api call
+                    // that will let me clear out all events in one call instead of iterating 
+                    // through the calendar
                     function clearCalendar() {
                         try {
                             // clear out calendar
@@ -179,6 +251,9 @@
                         }
                     }
 
+
+                    // This function sets the color of the calendar event based on the work item
+                    // type
                     function setCalendarColor(workItem, workItemResult) {
                         // determine work item type and then assign a color based on type
                         if (workItemResult.fields["System.WorkItemType"] === "Community") {
@@ -210,108 +285,164 @@
                         }
                     }
 
-                    function getQuery(queryId) {
+
+                    // this function gets the calendar event objects from an array of the work item ids, 
+                    // maximum id array length is 200
+                    function getCalEventsFromWIIdsSync(idArray) {
                         return new Promise(async(resolve, reject) => {
-                            if (queryId != 0) {
-                                var wiql = queryIdWIQLHash[queryId];
+                            // get work items from id array
+                            witClient  
+                            .getWorkItems(idArray, fieldArray)
+                            .then(  
+                                function(workItemsResult) {
+                                    // initialize variable which will hold all the calendar events
+                                    calEvents = [];
+                                    for (var i=0; i < workItemsResult.length; i++) {
+                                        // based off of the returned work item, create a calendar event named workItem
+                                        var workItem = [];
+                                        workItem.title = workItemsResult[i].id + " " + workItemsResult[i].fields["System.Title"];
+                                        eventNameUrlHash[workItem.title] = workItemsResult[i].url.split('_')[0] + currProjectName + "/_workitems/edit/" + workItemsResult[i].id;;
+                                        setCalendarColor(workItem, workItemsResult[i]);
+                                        
+                                        // based off of date type used, this creates the workItem date.
+                                        if (workItemsResult[i].fields["Custom.PublishDate"] === undefined) {
+                                            // there isn't a publish date
+                                            if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"] === undefined) {
+                                                // there isn't a due date
+                                                if (!(workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined)) {
+                                                    // there is a start date
+                                                    workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
+                                                    calEvents.push(workItem);
+                                                }
+                                            }
+                                            else {
+                                                // there is a due date
+                                                if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined) {
+                                                    // there is no start date
+                                                    workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"].split('T')[0];
+                                                }
+                                                else {
+                                                    // there is a start date
+                                                    workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
+
+                                                    // check and see if there is an end date
+                                                    if (!(workItemsResult[i].fields["Custom.EndDate"] === undefined)) {
+                                                        // there is an end date
+                                                        workItem.end = workItemsResult[i].fields["Custom.EndDate"].split('T')[0];
+                                                    }
+                                                }
+                                                
+                                                calEvents.push(workItem);
+                                            }
+                                        }
+                                        else {
+                                            // there is a publish date
+                                            workItem.start = workItemsResult[i].fields["Custom.PublishDate"].split('T')[0];
+                                            calEvents.push(workItem);
+                                        }
+                                    }
+                                    resolve(calEvents);
+                                },
+                                errorCall
+                            );
+                        });
+                    }
+
+
+                    // this function returns calendar events based off of a query object
+                    //
+                    function getCalEventsFromWIQLSync(wiql) {
+                        return new Promise(async(resolve, reject) => {
+                            // check if wiql exists
+                            if (!(wiql === undefined != 0)) {
+                                // wiql exists, process it
+
+                                // use AzD rest api to call the query. queryAzD() also messages the wiql to add
+                                // filtering based on date offset, 1 month before and 7 days after current display month.
+                                // queryAzD() returns back a list of work item ids
                                 var wiqlResult = await queryAzD(wiql);
 
+                                // if return list of ids is empty
                                 if (wiqlResult.workItems.length === 0) {
+                                    // return empty array
                                     resolve([]);
                                 }
                                 else {
-                                    // get result back, create an id array 
-                                    var idArray = [];
+                                    // Need to query AzD and get full work items back based off of work item id. However, the 
+                                    // rest api call can only process 200 ids at a time. So, create an array of id arrays maxed out 
+                                    // to 200 in each individual id array
+                                    var listOfIdArrays = [];  // array of array of ids
+                                    var indexOfList = 0;      // index for listOfIdArrays
+                                    var idArray = [];         // array to hold ids, max of 200 ids
+                                    var addedIdArrayToListOfIdArrays = false;
+
+                                    // iterate through all returned ids (wiqlResult)
                                     for (var i = 0; i < wiqlResult.workItems.length; i++) {
+                                        addedIdArrayToListOfIdArrays = false;
                                         idArray.push(wiqlResult.workItems[i].id);
+
+                                        // check if max size has been reached
+                                        if (idArray.length >= 200) {
+                                            // add idArray to listOfIdArrays and re-initialize values
+                                            listOfIdArrays.push(idArray);
+                                            idArray = [];
+                                            addedIdArrayToListOfIdArrays = true;
+                                        }
+                                    }
+                                    // check if the last idArray has been added to the listOfIdArryas or not
+                                    if (!addedIdArrayToListOfIdArrays) {
+                                        listOfIdArrays.push(idArray);
                                     }
                                             
-                                    // create return field
-                                    var fieldArray = [];
-                                    fieldArray.push("Custom.PublishDate");
-                                    fieldArray.push("Microsoft.VSTS.Scheduling.StartDate");
-                                    fieldArray.push("Microsoft.VSTS.Scheduling.DueDate");
-                                    fieldArray.push("Custom.EndDate");
-                                    fieldArray.push("System.Title");
-                                    fieldArray.push("Work Item Type");
-                                    fieldArray.push("System.WorkItemType");
-                                    
-                                    // get work items from query
-                                    witClient  
-                                        .getWorkItems(idArray, fieldArray)
-                                        .then(
-                                            function(workItemsResult) {
-                                                calEvents = [];
-                                                eventNameUrlHash = [];
-                                                for (var i=0; i < workItemsResult.length; i++) {
-                                                    var workItem = [];
-                                                    workItem.title = workItemsResult[i].id + " " + workItemsResult[i].fields["System.Title"];
-                                                    eventNameUrlHash[workItem.title] = workItemsResult[i].url.split('_')[0] + currProjectName + "/_workitems/edit/" + workItemsResult[i].id;;
-                                                    setCalendarColor(workItem, workItemsResult[i]);
-                                                    
-                                                    // based off of date type used, this creates the workItem date.
-                                                    if (workItemsResult[i].fields["Custom.PublishDate"] === undefined) {
-                                                        if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"] === undefined) {
-                                                            if (!(workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined)) {
-                                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
-                                                                calEvents.push(workItem);
-                                                            }
-                                                        }
-                                                        else {
-                                                            if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined) {
-                                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"].split('T')[0];
-                                                            }
-                                                            else {
-                                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
-                                                                if (!(workItemsResult[i].fields["Custom.EndDate"] === undefined)) {
-                                                                    workItem.end = workItemsResult[i].fields["Custom.EndDate"].split('T')[0];
-                                                                }
-                                                            }
-                                                            
-                                                            calEvents.push(workItem);
-                                                        }
-                                                    }
-                                                    else {
-                                                        workItem.start = workItemsResult[i].fields["Custom.PublishDate"].split('T')[0];
-                                                        calEvents.push(workItem);
-                                                    }
-                                                }
-                                                resolve(calEvents);
-                                            },
-                                            errorGotQueries
-                                        );
+                                    // initialize returnArray used to hold all calendar events and eventNameUrlHash 
+                                    // used to hold the url an event if clicked
+                                    var returnArray = []
+                                    eventNameUrlHash = [];
+                                    // loop through list of id arrays and get the calendar events from the id's
+                                    for (var i = 0; i < listOfIdArrays.length; i++) {
+                                        returnArray = returnArray.concat(await getCalEventsFromWIIdsSync(listOfIdArrays[i]));
+                                    }
+
+                                    resolve(returnArray);
                                 }
                             }
                             else {
+                                // wiql does not exist, it's a placeholder in drop down so 
+                                // return an empty array of calendar events
                                 resolve([]);
                             }
                         });
                     }
                     
-                    function displayWorkItems(workItemArray) {
+
+                    // this function clears out the calendar and displays the array of calendar events
+                    function displayCalEvents(workItemArray) {
                         clearCalendar();
                         for (var i = 0; i < workItemArray.length; i++) {
                             calendar.addEvent(workItemArray[i]);
                         }
                     }
 
+
                     // this functions calls a query by id and populates calendar
-                    async function callQueryAndDisplay(queryId) {
-                        var workItemArray = await getQuery(queryId);
-                        displayWorkItems(workItemArray);
+                    async function callQueryAndDisplay(wiql) {
+                        var calEventsArray = await getCalEventsFromWIQLSync(wiql);
+                        displayCalEvents(calEventsArray);
                     }
 
-                    function GetQueryDropDownSync() {
+                    // this function gets all the flat queries available for the current user, updates
+                    // queryIdWIQLHash with query id's and wiql and also updates the UI. Does not return anything
+                    function getQueryDropDownSync() {
                         return new Promise((resolve, reject) => {
-                            // get list of all queries
+                            // use AzD rest api to get all queries
                             witClient
                                 .getQueries(currProjectId, WIT_Contracts.QueryExpand.All, 2)
                                 .then(
                                     async function(result) {
                                         // recursively crawl and build out all flat list querires
-                                        var flatList = await getFlatQueries(result);
+                                        var flatList = await getFlatQueriesSync(result);
 
-                                        // add all flat list queries to the drop down
+                                        // add all flat list queries to the drop down and build out queryIdWIQLHash
                                         for (var i=0; i < flatList.length; i++) {
                                             $('#workItemQueries').append(new Option(flatList[i].name, flatList[i].id)); 
                                             queryIdWIQLHash[flatList[i].id] = flatList[i].wiql;
@@ -321,60 +452,81 @@
                                         resolve([]);
                                     },
                                     function(error) {
-                                        alert("couldn't get query drop down: " + error);
+                                        console.log("couldn't get query drop down: " + error);
                                     }
                                 );
 
                         })
                     }
 
-                    function getSavedQueryForUser() {
-                        // get saved query id
+
+                    // this function saves the query selected for the user
+                    function saveQueryForUser(queryObj) {
+                        var jsonStringOfQueryObj = JSON.stringify(queryObj);
                         VSS.getService(VSS.ServiceIds.ExtensionData).then(function(dataService) {
-                            // Get value in user scope
-                            dataService.getValue("userScopedKey", {scopeType: "User"}).then(async function(value) {
-                                // value 
-                                console.log("User scoped key value is " + value);
-                                // 
-                                $('#workItemQueries').val(value);
-                                callQueryAndDisplay(value);
+                            // Set value in user scope
+                            dataService.setValue("userSavedQuery", jsonStringOfQueryObj, {scopeType: "User"}).then(function(value) {
+                                console.log("User saved query value is " + value);
+                            });
+
+                        });
+                    }
+
+
+                    function getSavedQueryForUserSync() {
+                        return new Promise((resolve, reject) => {
+                            // get saved query id
+                            VSS.getService(VSS.ServiceIds.ExtensionData).then(function(dataService) {
+                                // Get value in user scope
+                                dataService.getValue("userSavedQuery", {scopeType: "User"}).then(async function(value) {
+                                    // value 
+                                    console.log("User scoped key value is " + value);
+                                    var queryObj = [];
+                                    try {
+                                        var queryObj = JSON.parse(value);
+                                    }
+                                    catch {
+                                        queryObj.queryId = 0;
+                                    }
+                                    
+
+                                    resolve(queryObj);
+                                });
                             });
                         });
                     }
 
-                    function saveQueryForUser(queryObj) {
-                        VSS.getService(VSS.ServiceIds.ExtensionData).then(function(dataService) {
-                            // Set value in user scope
-                            dataService.setValue("userScopedKey", queryObj, {scopeType: "User"}).then(function(value) {
-                                console.log("User scoped key value is " + value);
-                            });
-                        });
+
+                    // this function updates the dropdown with the saved query value, does not update the
+                    // calendar
+                    async function updateDropDownWithSavedValue() {
+                        // get saved query obj
+                        var queryObj = await getSavedQueryForUserSync();
+
+                        // update dropdown
+                        $('#workItemQueries').val(queryObj.queryId);
                     }
 
                     // event listener drop down changed
                     $('#workItemQueries').change(function() {
+                        // get query id from drop down and wiql form queryIdWIQLHash (populated when getQueryDropDownSync() is called)
                         var queryId = $(this).val();
-                        saveQueryForUser(queryId);
-                        callQueryAndDisplay(queryId);
+                        var queryObj = {queryId: queryId, wiql: queryIdWIQLHash[queryId]};
+                        
+                        // save query object to AzD
+                        saveQueryForUser(queryObj);
+
+                        // display the selected query in calendar
+                        callQueryAndDisplay(queryObj.wiql);
                     });
                                 
-                    await GetQueryDropDownSync();
-                    getSavedQueryForUser();
+                    await getQueryDropDownSync();
+                    updateDropDownWithSavedValue();
                     
                     
                 }
             );
         });
-    </script>
-
-    <script>
-
-    
-
-        
-
-
-
     </script>
 </head>
 
