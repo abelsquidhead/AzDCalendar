@@ -305,42 +305,41 @@
                                         setCalendarColor(workItem, workItemsResult[i]);
                                         
                                         // based off of date type used, this creates the workItem date.
-                                        if (workItemsResult[i].fields["Custom.PublishDate"] === undefined) {
-                                            // there isn't a publish date
-                                            if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"] === undefined) {
-                                                // there isn't a due date
-                                                if (!(workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined)) {
-                                                    // there is a start date
-                                                    workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
-                                                    calEvents.push(workItem);
-                                                }
-                                            }
-                                            else {
-                                                // there is a due date
-                                                if (workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined) {
-                                                    // there is no start date
-                                                    workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"].split('T')[0];
-                                                }
-                                                else {
-                                                    // there is a start date
-                                                    workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
-
-                                                    // check and see if there is an end date
-                                                    if (!(workItemsResult[i].fields["Custom.EndDate"] === undefined)) {
-                                                        // there is an end date
-                                                        workItem.end = workItemsResult[i].fields["Custom.EndDate"].split('T')[0];
-                                                    }
-                                                }
-                                                
-                                                calEvents.push(workItem);
-                                            }
-                                        }
-                                        else {
+                                        
+                                        // check if there is a PublishDate
+                                        if (!(workItemsResult[i].fields["Custom.PublishDate"] === undefined)) {
                                             // there is a publish date
                                             workItem.start = workItemsResult[i].fields["Custom.PublishDate"].split('T')[0];
                                             calEvents.push(workItem);
                                         }
+                                        else {
+                                            // there is not a publish date
+
+                                            // check if "Microsoft.VSTS.Scheduling.StartDate" exists 
+                                            if (!(workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"] === undefined)) {
+                                                // there is a start date
+                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.StartDate"].split('T')[0];
+
+                                                // check and see if there is an end date
+                                                if (!(workItemsResult[i].fields["Custom.EndDate"] === undefined)) {
+                                                    // there is an end date
+                                                    workItem.end = workItemsResult[i].fields["Custom.EndDate"].split('T')[0];
+                                                }
+                                                calEvents.push(workItem);
+                                            }
+                                            else if (!(workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"] === undefined)) {
+                                                // there is a due date, use it
+                                                workItem.start = workItemsResult[i].fields["Microsoft.VSTS.Scheduling.DueDate"].split('T')[0];
+                                                calEvents.push(workItem);
+                                            }
+
+                                            // there is no publish date
+                                            // there is no start date
+                                            // there is no due date
+                                            // don't include the work item.
+                                        }
                                     }
+                                    
                                     resolve(calEvents);
                                 },
                                 errorCall
@@ -424,7 +423,7 @@
                     }
 
 
-                    // this functions calls a query by id and populates calendar
+                    // this functions calls a query by wiql and populates calendar
                     async function callQueryAndDisplay(wiql) {
                         var calEventsArray = await getCalEventsFromWIQLSync(wiql);
                         displayCalEvents(calEventsArray);
