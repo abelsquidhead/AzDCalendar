@@ -2,7 +2,7 @@
   "manifestVersion": 1,
   "id": "WorkItemCalendar",
   "publisher": "abelwang",
-  "version": "1.0.221",
+  "version": "1.0.222",
   "name": "Work Item Calendar",
   "description": "A simple calendar that displays work items in a calendar based off of a user controlled date field",
   "public": false,

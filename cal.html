@@ -339,7 +339,7 @@
                                             // don't include the work item.
                                         }
                                     }
-                                    
+
                                     resolve(calEvents);
                                 },
                                 errorCall
@@ -353,7 +353,7 @@
                     function getCalEventsFromWIQLSync(wiql) {
                         return new Promise(async(resolve, reject) => {
                             // check if wiql exists
-                            if (!(wiql === undefined != 0)) {
+                            if (!(wiql === undefined)) {
                                 // wiql exists, process it
 
                                 // use AzD rest api to call the query. queryAzD() also messages the wiql to add
