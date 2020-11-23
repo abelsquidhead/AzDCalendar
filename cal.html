@@ -40,6 +40,7 @@
                     fieldArray.push("System.Title");
                     fieldArray.push("Work Item Type");
                     fieldArray.push("System.WorkItemType");
+                    fieldArray.push("System.State");
 
                     // "global" variables used throughout calendar
                     var eventNameUrlHash = [];
@@ -261,6 +262,9 @@
                         }
                         else if (workItemResult.fields["System.WorkItemType"] === "Content") {
                             workItem.backgroundColor = "#2ECCFA";
+                            if (workItemResult.fields["System.State"] === "Closed") {
+                                workItem.backgroundColor = "#041083";
+                            }
                         }
                         else if (workItemResult.fields["System.WorkItemType"] === "Event") {
                             workItem.backgroundColor = "#FF8000";
