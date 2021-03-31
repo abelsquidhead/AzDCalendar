@@ -16,6 +16,8 @@ Work Items are driven off of the type of date saved. The way it prioritizes date
 - if it has a ```Microsoft.VSTS.Scheduling.DueDate```, it will use it.
 - if it has none of these, it won't show up in the calendar.
 
+At this moment, the calendar only works if the fields ```Custom.PublishDate``` and ```Custom.EndDate``` exists. Add these two fields in, even if you don't use to get the cal working. I need to add code to see if those fields exist in the project, and if it doesn't don't add them to the wiql
+
 ## Bugs and Feature Requests
 I coded this up FAST. So that means it has not been extensively tested and unfortunately, that means there's probably bugs in here. If you found bugs or have new feature reqeusts, add them here: 
 
